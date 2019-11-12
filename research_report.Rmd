@@ -1,0 +1,815 @@
+---
+title: "Campaign Finance: Research Report"
+subtitle: "Big Data Statistics for R and Python: Group Examination of Part I"
+author:
+- Cedric Müller
+- Patrik Münch  
+- Dominik Wingeier
+date: "26/04/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Part I: Step-by-step implementation (15 points)
+
+
+## Task 1: Data gathering
+
+### Solution
+
+```{r, message = FALSE, warning = FALSE}
+
+# ======= SET UP ======= 
+
+# load packages 
+# install.packages("data.table")
+library(data.table)
+# install.packages("rvest")
+library(rvest)
+# install.packages("httr")
+library(httr)
+
+# define input parameters
+BASE.URL <- "http://datacommons.s3.amazonaws.com/subsets/td-20140324/contributions.fec.1990.csv.zip"
+output.path <- "./data/fec.csv"
+start.date <- "1990"
+end.date <- "2014"
+
+# ======= BUILD URLS ======= 
+
+# Parse base url
+base.url <- gsub("1990.csv.zip", "", BASE.URL)
+
+# Build sequence of required urls 
+years <- seq(from = start.date,
+             to = end.date,
+             by = 2)
+
+data.urls <- paste0(base.url, years, ".csv.zip")
+
+# ===== FETCH AND STACK CSVs =====
+
+# Download, unzip and parse all files; write them to one csv 
+for (url in data.urls) {
+  
+  # Download to temporary file and unzip
+  tmp.file <- tempfile()
+  download.file(url, tmp.file)
+  file.path <- unzip(tmp.file, exdir = "./data")
+
+  # Parse downloaded file, write to output csv, remove tempfile
+  csv.parsed <- fread(file.path[1])
+  fwrite(csv.parsed,
+         file = output.path,
+         append = TRUE)
+  unlink(tmp.file)
+}
+
+# Delete redundant individual csv files and README file
+sapply(paste0("./data/contributions.fec.", years, ".csv"), unlink)
+sapply(paste0("./data/README"), unlink)
+
+# ===== COMPRESS CSV FILE =====
+
+# Compress csv file using zip command
+zip("./data/fec.csv.zip", "./data/fec.csv")
+  
+# Delete uncompressed csv file
+sapply(paste0("./data/fec.csv"), unlink)
+
+```
+
+### Exposition of the solution
+
+Considering the multiple files which have to be downloaded, a simple for loop is set up. First, we define a base URL, parse it to its main elements and create a sequence of years based on the available data sets which cover a time period of 2 years each. With that we create a character string consisting of all URLs linking to the individual file batches. Within the for loop, we first create a temporary file to which we download the zip file. We then define a file path, given by the data folder, to which we extract the zipped file. Next, we parse the unzipped file and append it to our previously defined csv file which gathers all individual files.The temporary file is deleted. As soon as all iterations of the loop are done, we delete the redundant individual files. Finally, the resulting _fec.csv_ file is compressed using the zip command. While the fec.csv file takes up 7.8GB of memory, the zipped version is compressed to 1.4GB.In order to benefit from the limited use of storage we finally delete the uncompressed csv file.  The approach of downloading individual batches has its advantages over downloading one large zip file. First, if only data from a smaller time period is relevant or if only a sample is required, one can download only selected batches of the data rather than one large file. In addition, unzipping large files is computationally intense. The standard _unzip()_ command in R e.g. only works reliable with files smaller than 4GB.  The purpose of unzipping and compressing the data is given by the significantly lower memory space used to store the data. Further it reduces the transmission time when distributing or downloading the data.
+
+
+## Task 2: Data storage and databases
+
+### Solution
+
+```{r, message = FALSE, warning = FALSE}
+
+# ======= SET UP ======= 
+
+# load packages 
+# install.packages("data.table")
+library(data.table)
+# install.packages("RSQLite")
+library(RSQLite)
+# install.packages("DBI")
+library(DBI)
+# install.packages("rvest")
+library(rvest)
+# install.packages("dplyr")
+library(dplyr)
+# install.packages("forcats")
+library(forcats)
+# install.packages("tidyverse")
+library(tidyverse)
+
+# ======= CREATE NEW DATABASE =======
+
+# Initiate the database
+fec <- dbConnect(SQLite(), "./data/fec.sqlite")
+
+# Import data into current R sesssion
+donations <- fread(paste0("unzip -cq ", "./data/fec.csv.zip"))
+
+  # Scraping transactiontypes from html page
+  transaction.types.url <- read_html("https://classic.fec.gov/finance/disclosure/metadata/DataDictionaryTransactionTypeCodes.shtml")
+  transaction.types.text <- transaction.types.url %>%
+    html_nodes("table") %>% 
+    html_table(fill = TRUE)
+  transactiontypes <- as.data.frame(transaction.types.text)
+
+# Read in industrycodes from csv  
+industrycodes <- fread("http://assets.transparencydata.org.s3.amazonaws.com/docs/catcodes.csv")
+
+# Change headers of input tables
+colnames(donations) [1] <- c("transaction_id")
+colnames(donations) [5] <- c("transaction_id_fec_nimsp")
+colnames(transactiontypes) <- c("transaction_type", "transaction_type_description")
+colnames(industrycodes) <- c("source", "industry_subcategory_id", "industry_subcategory", "industry_category", "industry_category_id")
+
+# Add tables to database and define field.types if possible
+dbWriteTable(fec, "donations", donations, 
+             field.types = c(
+               transaction_id = "numeric(9,0)",
+               import_reference_id = "numeric(3,0)",
+               cycle = "numeric(4,0)",
+               transaction_type = "varchar(3)",
+               filing_id = "numeric(12,0)",
+               is_amendment = "char(1)",
+               amount = "numeric",
+               date = "date",
+               contributor_type = "char(1)",
+               contributor_gender = "char(1)",
+               contributor_zipcode = "numeric",
+               contributor_category = "char(5)",
+               recipient_ext_id = "char(9)",
+               recipient_party = "char(1)",
+               recipient_type = "char(1)",
+               recipient_category = "char(5)",
+               committee_ext_id = "char(9)",
+               committee_party = "char(1)",
+               candidacy_status = "char(1)",
+               seat_status	= "char(1)",
+               seat_result = "char(1)"))
+              
+dbWriteTable(fec, "transactiontypes", transactiontypes, 
+             field.types = c(
+               transaction_type = "varchar(3)"))
+
+dbWriteTable(fec, "industrycodes", industrycodes, 
+             field.types = c(
+               source = "varchar(5)", 
+               industry_subcategory_id = "char(5)", 
+               industry_category_id = "char(3)"))
+
+# Adding indices to database
+dbExecute(fec, "CREATE INDEX transaction_id ON donations (transaction_id)")
+dbExecute(fec, "CREATE INDEX industry_category ON industrycodes (industry_subcategory_id)")
+dbExecute(fec, "CREATE INDEX transaction_type ON transactiontypes (transaction_type)")
+
+```
+
+### Exposition of the solution
+
+After initiating the SQLite database, we first load the required data into the current R session. The donations data is loaded by unzipping the compressed csv file. The csv file regarding the industry codes can be obtained by applying the _fread()_ command to the given URL. For the transaction types we apply the web scraping package ‘rvest’ in combination with the ‘selectorgadget’ which identifies which css selectors extracts the required data. 
+In the next step we add the loaded files to the SQL database. Thereby we keep the data in three separate files which allows us to benefit from reduced storage use as it eliminates redundant variable-value repetitions. The link between the tables is ensured through the unique identifiers of the key-variables per table. When adding the tables to the relational database, we optimize the data set by defining the correct data type of the columns and by creating indices. The command _field.type =_ within the _dbWriteTable_ function is used to limit the number of bytes required by each cell to its minimum. Considering the size of the database, this approach significantly reduces the required storage space and speeds up queries since less data has to be retrieved. In addition, the indexing of key-columns substantially reduces the loading time required to find and retrieve data from the database. Stored on the disk, these indices create shortcuts for SQLite to match the unique identifiers and thus join the tables in the database. Given the time intensive creation of an index, we limit this procedure only to the key columns which are frequently searched for in the following tasks namely transaction_id, industry_subcategory_id and transaction_type. Overall, loading times of the queries in the following tasks as well as storage usage is reduced compared to an unoptimized database. 
+
+
+## Task 3: Data aggregation 
+
+### Solution
+
+```{r, message = FALSE, warning = FALSE}
+
+# ======= SET UP ======= 
+
+# load packages 
+# install.packages("RSQLite")
+library(RSQLite)
+# install.packages("dplyr")
+library(dplyr)
+# install.packages("DBI")
+library(DBI)
+# install.packages("data.table")
+library(data.table)
+# install.packages("knitr")
+library(knitr)
+# install.packages("formattable")
+library(formattable)
+# install.packages("kableExtra")
+library(kableExtra)
+
+#  Connect to DB
+fec <- dbConnect(SQLite(), "./data/fec.sqlite")
+
+```
+#### Table 3.1
+Create a table that shows the total (sum) amount of contributions from the OIL & GAS-industry per year. Once in absolute terms and once in relative terms (contributions from the OIL & GAS-industry as percentage of contributions from all industries). Make sure that you only consider 'contributions to political committees (other than Super PACs and Hybrid PACs) from an individual, partnership or limited liability company' in this analysis'. Hint: have a look at the transactiontypes and the industrycodes tables to filter the data correctly.
+
+```{r, message = FALSE, warning = FALSE}
+# Define SQL query which selects the required variables, already excluding donations to Super PAC's or    Hybrid PAC's
+# (i.e. transaction_type NOT IN ('10', '15', '15E')), only including donations by the Oil & Gas industry 
+# (i.e. contributor_category in ...), only donations to political committees (i.e. recipient_type ='C')
+# as well as excluding negative donation amounts (i.e. AND amount>0)
+contr.oil.gas.query <- "SELECT date, amount, contributor_category  
+FROM donations
+WHERE transaction_type NOT IN ('10', '15', '15E')
+AND contributor_category IN(
+SELECT industry_subcategory_id
+FROM industrycodes
+WHERE industry_category_ID IN ('E01', 'h'))
+AND recipient_type ='C'
+AND amount>0"
+
+# Define SQL query which selects the required variables, already excluding donations to Super PAC's or Hybrid PAC's
+# (i.e. transaction_type NOT IN ('10', '15', '15E')),  INCLUDING DONATIONS BY ALL INDUSTRIES,
+# only donations to political committees (i.e. recipient_type ='C')
+# as well as excluding negative donation amounts (i.e. AND amount>0)
+total.contr.query <- "SELECT date, amount, contributor_category
+FROM donations 
+WHERE transaction_type NOT IN ('10', '15', '15E')
+AND recipient_type ='C'
+AND amount>0"
+
+# Retrive Oil & Gas data from db via dbGetQuery and import efficiently into R workspace via as.data.table
+contr.oil.gas.table <- as.data.table(dbGetQuery(fec, contr.oil.gas.query))
+
+# Format date as date
+contr.oil.gas.table$date <- as.Date(contr.oil.gas.table$date,"%Y-%m-%d")
+
+# Extract year from date, which is used later to group donations by year
+contr.oil.gas.table$year <- as.numeric(format(contr.oil.gas.table$date, "%Y"))
+
+# Exclude all observations which have a date before 1990, or larger than 2014 (which exists in the data)
+# Further Exclude 2014, as there are no donations by the Oil & Gas Sector.
+contr.oil.gas.table <- contr.oil.gas.table[which(contr.oil.gas.table$year>=1990 & contr.oil.gas.table$year<=2013),]
+
+# Same commands above for the total contributions table
+total.contr.table <- as.data.table(dbGetQuery(fec, total.contr.query))
+total.contr.table$date <- as.Date(total.contr.table$date,"%Y-%m-%d")
+total.contr.table$year <- as.numeric(format(total.contr.table$date, "%Y"))
+total.contr.table <- total.contr.table[which(total.contr.table$year>=1990 & total.contr.table$year<=2013),]
+
+# Calculating total contributions from Oil & Gas per year and later changing colnames
+total.amount.og.year <- contr.oil.gas.table[,sum(amount), by = year]
+colnames(total.amount.og.year) <- c("year", "tot_contribution_oil_gas")
+
+# Calculating total contributions from all industries per year
+total.amount.year <- total.contr.table[,sum(amount), by = year]
+
+# Merge total amount to the the main table
+total.amount.og.year <- merge(x=total.amount.og.year,y=total.amount.year, by='year')
+
+# Compute relative contribution amount by dividing Oil & Gas contribution by total contribution
+total.amount.og.year$rel.amount.year <- total.amount.og.year$tot_contribution_oil_gas/total.amount.og.year$V1
+
+# Delete V1 as it is of no use in the final table
+total.amount.og.year$V1 <- NULL
+
+# Change format of relative number to percent
+total.amount.og.year$rel.amount.year <- percent(total.amount.og.year$rel.amount.year)
+
+# Change format of absolute number
+total.amount.og.year$tot_contribution_oil_gas <- accounting(total.amount.og.year$tot_contribution_oil_gas, format = "d")
+
+
+# Change colnames of table.3.1 and later order by Year and illustrate table through kable
+colnames(total.amount.og.year) <- c("Year", "Total Contribution by Oil & Gas", "Relative Contribution by Oil & Gas")
+table.3.1 <- total.amount.og.year[order(Year, decreasing = TRUE)]
+
+# Create final table
+kable(table.3.1,
+      align =c("l","r","r"), row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c( "stripped", "hover", "condensed"), full_width = F, font_size =11)
+```
+#### Table 3.2
+Create a table that shows a ranking of the top-five politicians/candidates in terms of the overall donations received as part of a presidential campaign, for each election cycle in the data. Note: do not count negative donation amounts (filter those out)! The columns of this table indicate the respective election cycle, the rows indicate the ranking from 1 to 5.
+
+```{r, message = FALSE, warning = FALSE}
+# Define SQL query which selects the required variables, already including only contributions to the presidential
+# elections with a positive amount. Furthermore, already sum up these amounts by cycle and recipient
+top5.polit.query <- "SELECT distinct cycle, SUM(amount) as amount, recipient_name
+FROM donations
+WHERE seat = 'federal:president'
+AND amount>0
+GROUP BY cycle, recipient_name" 
+
+# Retrieve from db via dbGetQuery and import efficiently into R workspace via as.data.table
+top5.polit.table <- as.data.table(dbGetQuery(fec, top5.polit.query))
+
+# Order the observations by cycle and descending total amount, furthermore only select the first 5 obs per cycle
+top.5.table.help <- setorder(setDT(top5.polit.table), cycle, -amount)[, indx := seq_len(.N), by = cycle][indx <= 5]
+
+# Define row and column names
+rownames.3.2 <- as.numeric(seq(from = 1, to = 5))
+colnames.3.2 <- as.numeric(seq(from = 1990, to = 2014, by = 2))
+
+# Initialize final table.3.2
+table.3.2 <- data.frame(matrix(ncol = 13, nrow = 5))
+rownames(table.3.2) <- rownames.3.2  
+colnames(table.3.2) <- colnames.3.2
+
+# Fill up final table with respective values. If there is no value, the ifelse will default to 'NA'
+for (i in rownames.3.2) {
+  for (j in colnames.3.2) {
+    k <- (j-1988)/2
+    table.3.2[i,k] <-   ifelse(nrow(subset(top.5.table.help, indx == i & cycle == j, select=recipient_name))== 1,
+                               subset(top.5.table.help, indx == i & cycle == j, select=recipient_name),
+                               'NA')
+  }
+}
+
+# Show table
+kable(table.3.2,
+      align =c("c","c","c","c","c","c","c","c","c","c","c")) %>% 
+  kable_styling(bootstrap_options = c( "striped", "hover", "condensed"), full_width = F, font_size =11)
+
+```
+#### Table 3.3
+Create a table showing the total number of small donations (< USD1000) from individual contributors (not parties or corporations) associated with one of the following industries (BUSINESS ASSOCIATIONS, PUBLIC SECTOR UNIONS, INDUSTRIAL UNIONS, NON-PROFIT INSTITUTIONS, RETIRED) per year (years in rows).
+
+```{r, message = FALSE, warning = FALSE}
+# Define SQL query which selects the required variables, and generate the newly required 'Industry'
+# variable (i.e. CASE WHEN...). Only include donations from individuals (i.e. WHERE contributor_type 
+# = 'I'),associated with the concerned industries (i.e. AND contributor_category IN(...)), and
+# contribution amounts of between 0 and 1000 (i.e. AND amount<1000 and amount>0)
+small.donations.query <- "SELECT date, amount,
+CASE 
+WHEN contributor_category IN ('G1000','G1100','G1200','G1300','G1310','G1400') then 'BUSINESS_ASSOCIATIONS'
+WHEN contributor_category IN ('L1000','L1100','L1200','L1300','L1400','L1500') then 'PUBLIC_SECTOR_UNIONS'
+WHEN contributor_category IN ('LC100','LC150','LE100','LE200','LM100','LM150') then 'INDUSTRIAL_UNIONS'
+WHEN contributor_category IN ('X1200') then 'RETIRED'
+ELSE 'NON_PROFIT_INSTITUTION'
+END as 'Industry'
+FROM donations
+WHERE contributor_type = 'I'
+AND contributor_category IN(
+SELECT industry_subcategory_id
+FROM industrycodes
+WHERE industry_category_ID IN ('N00', 'P04', 'P02', 'W02', 'W06')) 
+AND amount<1000 
+AND amount>0"
+
+# Retrieve from db via dbGetQuery and import efficiently into R workspace via as.data.table
+small.donations.table.help <- as.data.table(dbGetQuery(fec, small.donations.query))
+
+# Format date as date
+small.donations.table.help$date <- as.Date(small.donations.table.help$date,"%Y-%m-%d")
+
+# Extract year from date, which is used later to group donations by year
+small.donations.table.help$year <- as.numeric(format(small.donations.table.help$date, "%Y"))
+
+# count the number of donations per year and industry
+small.donations.table <- count(small.donations.table.help, year, Industry)
+
+# order the number of donations per year
+small.donations.table <- small.donations.table[order(small.donations.table$year),]
+
+# Exclude all observations which have a date before 1990, or larger than 2014 (which exists in the data)
+# Exclude 2014 because there are barely any observations
+small.donations.table <- small.donations.table[which(small.donations.table$year>=1990 & small.donations.table$year<=2013),]
+
+# Define row and column names
+rownames.3.3 <- as.numeric(seq(from = 1990, to = 2013))
+colnames.3.3 <- c('BUSINESS_ASSOCIATIONS', 'PUBLIC_SECTOR_UNIONS', 'INDUSTRIAL_UNIONS', 'RETIRED', 'NON_PROFIT_INSTITUTION')
+
+# Create reference df, which will be used in the for loop 
+reference.3.3 <- seq(from = 1, to = 5)
+ref.df.3.3 <- as.data.frame(cbind(colnames.3.3, reference.3.3))
+
+# Initialize final table.3.3
+table.3.3 <- data.frame(matrix(ncol = 5, nrow = 24))
+rownames(table.3.3) <- rownames.3.3 
+colnames(table.3.3) <- colnames.3.3
+
+# Fill up final table with respective values. If there is no value, the ifelse will default to 0
+for (i in rownames.3.3) {
+  for (j in as.numeric(ref.df.3.3$reference.3.3)) {
+    k <- (i-1989)
+    table.3.3[k,j] <-   ifelse(nrow(subset(small.donations.table, year == i & Industry == as.character(ref.df.3.3[j,1]), select=n))== 1,     as.numeric(subset(small.donations.table, year == i & Industry == as.character(ref.df.3.3[j,1]), select=n)), 0)
+  }
+}
+
+# Change colnames for final table
+colnames(table.3.3) <- c('Business Associations', 'Public Sector Unions', 'Industrial Unions', 'Retired', 'Non-Profit Institutions')
+
+# Order the table according to the years
+table.3.3 <- table.3.3[ order(row.names(table.3.3), decreasing = TRUE), ]
+
+# Add years as a vector, for illustratory purposes in the latter table
+Year <- as.numeric(rownames(table.3.3))
+table.3.3<- as.data.frame(cbind(Year, table.3.3))
+
+# Format the numbers for the table and convert them into 'accounting' format
+# Somehow it only works when applied seperately to each column vector instead of the whole df at once
+for (i in 2:ncol(table.3.3)) {
+  table.3.3[,i] <- accounting(table.3.3[,i], format = "d")
+}
+
+# Create output table
+kable(table.3.3, align =c("l","r","r","r","r","r"), row.names = FALSE) %>%
+  kable_styling(bootstrap_options = c( "stripped", "hover", "condensed"), full_width = F, font_size =11)
+
+# Delete all files from workspace, except the ones still required
+rm(list= ls()[!(ls() %in% c('fec','table.3.1', 'table.3.2', 'table.3.3'))])
+```
+### Exposition of the solution
+
+Our approach for achieving the most efficient data aggregation is to combine and find a good balance between efficient use of SQL with an efficient use of specific function within R. In case of the SQL queries and the retrieval of the data from the database we followed certain common rules, which optimize the performance of SQL queries. Hereby, several performance enhancing measures were pursued. Most importantly the respective SQL statements only select the required variables, which helps to accelerate the query results and reduces the amount of workspace required. The filtering of observations was also already pursued in the SQL (WHERE) statement, which too minimizes the amount of workspace required. Furthermore, we avoided the use of ORDER BY clauses, which are anyways unnecessary as the results are grouped and aggregated. Hence, order does not matter. Moreover, we avoided using functions in the WHERE statement as well as predicates such as % combined with a LIKE statement, which too would decrease the speed of the query. Another important performance increasing measure was the decision to include nested tables instead of e.g. a LEFT JOIN (see query for table 1 & 3). Lastly, we tried to execute many data manipulations (see CASE WHEN statement in query for table 3)  or aggregations (see SUM() and GROUP BY in query for table 2) already in the SQL query to minimize the repetition of commands. As a result, we receive SQL queries which exhibit an increased performance, as well as yield output tables which use less space on the workspace. These SQL queries are then executed via _dbGetQuery_ and read into r through the _as.data.table_ command from the data.table package. This command results in a more efficient import/retrieval of the data relative to comparable methods. Furthermore, it allows us to apply functions of the data.table package to further aggregate the data in order to achieve the tabular form as asked by the task. All together the SQL queries combined with the import through the data.table package yield efficient results, both in terms of speed as well as usage of resources.
+
+
+## Task 4: Visualization
+
+### Solution
+
+```{r, message = FALSE, warning = FALSE}
+# ======= SET UP ======= 
+
+# load packages 
+# install.packages("ggplot2")
+library(ggplot2)
+# install.packages("ggpubr")
+library(ggpubr)
+# install.packages("scales")
+library(scales)
+# install.packages("directlabels")
+library(directlabels)
+
+# defining 5 different tables each highlghting the development of the contributions over the years from a different industry.
+small.donations <- ggplot(data = table.3.3, aes(x = Year)) + 
+  geom_line(aes(y = table.3.3$`Business Associations`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Public Sector Unions`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Industrial Unions`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Non-Profit Institutions`), colour = "black", size = 0.75) +
+  geom_line(aes(y = table.3.3$Retired), colour = "blue", size = 0.75) +
+  ylab("Number of Donations") +
+  ggtitle("Retired") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 11)) +
+  scale_y_continuous(trans ='log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x)))
+small.donations2 <- ggplot(data = table.3.3, aes(x = Year)) + 
+  geom_line(aes(y = table.3.3$Retired), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Business Associations`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Public Sector Unions`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Industrial Unions`), colour = "black", size = 0.75) +
+  geom_line(aes(y = table.3.3$`Non-Profit Institutions`), colour = "blue", size = 0.75) +
+  ylab("Number of Donations") +
+  ggtitle("Non-Profit Institutions") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 11)) +
+  scale_y_continuous(trans ='log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x)))
+small.donations3 <- ggplot(data = table.3.3, aes(x = Year)) + 
+  geom_line(aes(y = table.3.3$`Non-Profit Institutions`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$Retired), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Business Associations`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Public Sector Unions`), colour = "black", size = 0.75) +
+  geom_line(aes(y = table.3.3$`Industrial Unions`), colour = "blue", size = 0.75) +
+  ylab("Number of Donations") +
+  ggtitle("Industrial Unions") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 11)) +
+  scale_y_continuous(trans ='log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x)))
+small.donations4 <- ggplot(data = table.3.3, aes(x = Year)) + 
+  geom_line(aes(y = table.3.3$`Industrial Unions`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Non-Profit Institutions`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$Retired), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Business Associations`), colour = "black", size = 0.75) +
+  geom_line(aes(y = table.3.3$`Public Sector Unions`), colour = "blue", size = 0.75) +
+  ylab("Number of Donations") +
+  ggtitle("Public Sector Unions") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 11)) +
+  scale_y_continuous(trans ='log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x)))
+small.donations5 <- ggplot(data = table.3.3, aes(x = Year)) + 
+  geom_line(aes(y = table.3.3$`Public Sector Unions`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Industrial Unions`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$`Non-Profit Institutions`), colour = "black", size = 0.75) + 
+  geom_line(aes(y = table.3.3$Retired), colour = "black", size = 0.75) +
+  geom_line(aes(y = table.3.3$`Business Associations`), colour = "blue", size = 0.75) +
+  ylab("Number of Donations") +
+  ggtitle("Business Associations") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 11)) +
+  scale_y_continuous(trans ='log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x)))
+
+# arranging the five figures in one plot
+ggarrange(small.donations, small.donations2, small.donations3, small.donations4, small.donations5)
+
+```
+
+### Figure notes
+
+This figure illustrates the development of the total number of small donations (less than USD1000) from individual contributors (not parties or corporations) associated with one of the following industries (BUSINESS ASSOCIATIONS, PUBLIC SECTOR UNIONS, INDUSTRIAL UNIONS, NON-PROFIT INSTITUTIONS, RETIRED) per year. As one can observe the group "RETIRED" contributes most donations and they are increasing. This makes sense since the group "RETIRED" is the only "industry" which consists of single individuals while the other four groups represent whole industries. Furthermore, one can see that the donations from retired individuals are cyclical in contrast to the other donations. The figure is based on the idea of a special type of a spaghetti chart as proposed by [Jonathan A. Schwabisch (2014) in An Economistʹs Guide to Visualizing Data. Journal of Economic Perspectives. 28(1):209‐234](https://www.aeaweb.org/articles?id=10.1257/jep.28.1.209). The idea is to highlight only one line to make the illustration more comprehensible.
+
+### Exposition of the solution
+
+An image based on a raster-format is comprised of a certain number of pixels. Depending on the size and quality of the image the number of pixels varies. The higher the density of pixels per inch, the higher the quality. Due to this characteristic an image in a raster-based format has the advantage to include rich and complex color blend. This property is especially useful for photographs and its editing. On the other hand, the disadvantage in the application of a raster-based image lies in its limitation of scalability. When scaling a raster-based image, each pixel becomes larger or the software tries to compensate the scaling effect by adding pixels. This leads to the result that the image becomes blurry. Additionally, the file-size of images in the raster-based format are comparably large. An image in a vector-based format consists of paths which are generated by mathematical formulas. These paths are defined in terms of two dimensional points which are connected by lines or curves. This property leads to the possibility of infinite scalability without quality loss. Thus, such images are very useful to create logos, drawings or illustrations. The construction method has as a result that it is very tedious to develop true-life images as e.g. a photography. While an image in a vector-based format can be easily transformed to a raster-based format, it is difficult in reverse.^[The information was retrieved from the following websites: https://vector-conversions.com/vectorizing/raster_vs_vector.html, https://modassicmarketing.com/understanding-image-file-types, https://www.psprint.com/resources/difference-between-raster-vector/ as of 20 April 2019.] 
+
+On the basis of this analysis, we would propose to store and share this figure in the vector-based format due to two reasons. First, the figure is an illustration of a graph and does not depict a photography or a true-life image respectively. Thus, the advantage of being able to include rich and complex color blends is of no use in our case and results in a saving of storing capacity. Furthermore, we appreciate the opportunity to freely scale the figure without losing quality. This is  especially useful when sharing the figure or using it for different purposes, as e.g. in a research report, on a presentation slide or on a poster.
+
+
+# Part II: Data Visualisation and Data Analysis
+
+## Money and People - How mobilizing donations impacts the chances of winning the US House of Representatives elections
+
+### Summary
+
+
+This data analysis at hand aims at answering the question of how the number of donors, as well as the total amount of donations per United States House of Representatives candidate affect their probability of winning the election. For this purpose historical US campaign finance data from 1990-2014 is evaluated. In a first instance, the data is being adequately filtered. Only positive contributions, going directly to a House candidate are included. The results are then summarized into groups of candidates who have won their candidacy, and those who have lost. The respective summary statistic is illustrated in the table below. One can observe that the winning candidates on average receive multiple times more total donations in USD, relative to their losing peers. Moreover, winning candidates tend to have on average at least 15 times more individual donors per candidate. However, the median as well as the average donation amount per candidate do not differentiate much between the two, the latter amount is even larger for the losing candidates. To further analyze these findings the total amount of donations received, as well as the total number of donors per candidate is determined. These are then fed into a logistic regression as independent variables. A dummy of either winning (i.e. dummy=1) or losing (i.e. dummy=0) the election is chosen as the dependent variable. The regression results are illustrated in the table on the bottom-right within the graph. Furthermore, the two independent variables are plotted against each other and the winning and losing candidates are illustrated in black and red respectively. The regression results show that, the total donation amount has a marginal negative, and the number of donors, has a positive effect on the probability of winning an election. Especially, the negative effect is surprising, whereas the positive effect was to be expected. However, the results might suffer from multicollinearity, which indicates that the magnitude as well as direction of correlation between independent and dependent variable is actually imprecise and suffering from linear stochastic dependencies between the independent variables. The graph confirms, but also contradicts the findings from the regression. The winning candidates tend to be on the top right (highlighted by the black confidence interval ellipse), hence they tend to have both, higher amount of donations as well as a larger number of donators relative to their losing peers. The difference between the two groups is substantial, considering that the x- and y-axes are log scales. Conclusively, this analysis yields ambiguous results. On the one hand the graph, as well as the summary statistics point at a strong positive correlation between the dependent and both independent variables. However, the regression results contradict the positive correlation of the total donation amount with the election outcome. This could be explained by the aforementioned potential multicollinearity. Furthermore, one has to take into consideration that these findings do not infer any causation.
+
+```{r, message = FALSE, warning = FALSE}
+# load packages
+# install.packages("ff")
+library(ff)
+# install.packages("ffbase")
+library(ffbase)
+# install.packages("ETLUtils")
+library(ETLUtils)
+# install.packages("doBy")
+library(doBy)
+# install.packages("knitr")
+library(knitr)
+# install.packages("kableExtra")
+library(kableExtra)
+# install.packages("DescTools")
+library(DescTools)
+# install.packages("formattable")
+library(formattable)
+# install.packages("formattable")
+library(RSQLite)
+# install.packages("ggplot2")
+library(ggplot2)
+# install.packages("extrafont")
+library(extrafont)
+# install.packages("gridExtra")
+library(gridExtra)
+# install.packages("scales")
+library(scales)
+
+# Connect to db 
+fec <- dbConnect(SQLite(), "./data/fec.sqlite")
+
+# Selects the needed variables and creates two new modified vars in sql. The var
+# seat_status_mod is required as observations where the candidate is an Incumbent
+# lack the seat_status variable. The other modified vars are for aestethics. Furthermore,
+# it only selects donation to house elections (i.e. where seat = 'federal:house' ),
+# positive donation amounts (i.e. and amount > 0 ), donations which went directly to 
+# the candidate as donations going to organizations are not traceable with this data set
+# (i.e.and recipient_type='P) as well as observations where we can track if
+# the recpient has won or lost (i.e. and (seat_status='I' or seat_result <>''))
+data.extract.df <-  read.dbi.ffdf(query = ("select transaction_id, amount, recipient_name,                                                            case 
+                                           when recipient_party='R' then 'Republican'
+                                           when recipient_party='D' then 'Democrat'      
+                                           else 'Other'
+                                           end as recipient_party_mod,
+                                           case 
+                                           when seat_status='I' then 'I'
+                                           else 'O'
+                                           end as seat_status_mod,
+                                           case 
+                                           when (seat_status='I' and seat_result='') then 'Win'
+                                           when seat_result='W' then 'Win'
+                                           else 'Loss'
+                                           end as seat_result_mod
+                                           from donations 
+                                           where seat = 'federal:house' 
+                                           and amount > 0 
+                                           and recipient_type='P' 
+                                           and (seat_status='I' or seat_result <>'')"), 
+                                  dbConnect.args = list(drv = dbConnect(SQLite(), 
+                                                                        "./data/fec.sqlite"), dbname = fec), next.rows = 500000)
+
+# Define function which determines rounded values as well as the sum in the first
+# split-apply-combine command
+fun.1 <- function(x){c(mean = round(mean(x)) , 
+                      median= round(median(x)), 
+                      std.dev = round(sd(x)),
+                      donation.p.cand = sum(x))}
+
+# split-apply-combine procedure on data file chunks
+donations.categ.1 <- as.data.frame(ffdfdply(data.extract.df,
+                                           split = data.extract.df$seat_result_mod,
+                                           BATCHBYTES = 100000000,
+                                           FUN = function(x) {
+                                             summaryBy(amount ~ seat_result_mod + recipient_party_mod,
+                                                       data = x, FUN = fun.1) 
+                                           }))
+
+# Define second function used for determining summary statistics with a 'group by'
+fun.2 <- function(x){c(count.donors = length(x) , 
+                      count.candidates=length(unique(x)), 
+                      mean.donation.amount = round(length(x)/length(unique(x))))}
+
+# Run second split-apply-combine approach
+donations.categ2 <- as.data.frame(ffdfdply(data.extract.df,
+                                           split = data.extract.df$seat_result_mod,
+                                           BATCHBYTES = 100000000,
+                                           FUN = function(x) {
+                                             summaryBy(recipient_name ~ seat_result_mod + recipient_party_mod,
+                                                       data = x, FUN = fun.2) 
+                                           }))
+
+# Left join donations.categ2 onto donations.categ.1
+donations.categ <- merge(x=donations.categ.1,y=donations.categ2 ,
+                         by=c('seat_result_mod','recipient_party_mod'))
+
+# Create donations per candidate here, as it requires values from fun.1 as well as fun.2
+donations.categ[,6] <- round(donations.categ[,6]/donations.categ[,8])
+
+# Change row names. First Vector has to be concatenated to recipient_party_mod as else
+# there will be an error due to non-unique rownames
+row.name <- c(2, 2, 2, 1, 1, 1)
+rownames(donations.categ) <- paste (row.name,donations.categ$recipient_party_mod,
+                                    sep = ". ", collapse = NULL)
+
+# Delete obsolete columns and reorder rows/columns
+donations.categ <- donations.categ[c(4,6,5,1,3,2),c(7,8,6,9,3,4,5)]
+
+# Change colnames
+colnames(donations.categ) <- c("No. of Donors","No. of Candidates", "Avg. Donation per Candidate",
+                               "Avg. No. of Donors per Candidate", "Average Donation",
+                               "Median Donation", "Std. Dev. Donation" )
+
+# Format the numbers for the table and convert them into 'accounting' format
+for (i in 1:ncol(donations.categ)) {
+  donations.categ[,i] <- accounting(donations.categ[,i], format = "d")
+}
+
+# Delete all files from workspace, except the ones still required
+rm(list= ls()[!(ls() %in% c('fec','table.3.1', 'table.3.2', 'table.3.3', 'donations.categ'))])
+```
+
+```{r, message = FALSE, warning = FALSE}
+# Create table with the descriptive statistics for winners/losers as well as Democrats,
+# Republican and other candidates
+kable(donations.categ, caption = "Summary Statistics",
+      align =c("l","r","r","r","r","r","r")) %>%
+  kable_styling(bootstrap_options = c( "hover", "condensed"), full_width = F,
+                font_size =11)  %>%
+  row_spec(1:6, color="black") %>%
+  group_rows("Won Election", 1, 3) %>%
+  group_rows("Lost Election", 4, 6) %>%
+  footnote(general = "US Federal Election Commission (FEC) data (1990-2014). Data was filtered such that only positive donation amounts, going directly to the House candidates were considered.",
+           general_title = "Data: " )
+```
+
+
+```{r, message = FALSE, warning = FALSE}
+# load packages
+# install.packages("ff")
+library(ff)
+# install.packages("ffbase")
+library(ffbase)
+# install.packages("ETLUtils")
+library(ETLUtils)
+# install.packages("doBy")
+library(doBy)
+# install.packages("knitr")
+library(knitr)
+# install.packages("kableExtra")
+library(kableExtra)
+# install.packages("DescTools")
+library(DescTools)
+# install.packages("formattable")
+library(formattable)
+# install.packages("formattable")
+library(RSQLite)
+# install.packages("ggplot2")
+library(ggplot2)
+# install.packages("extrafont")
+library(extrafont)
+# install.packages("gridExtra")
+library(gridExtra)
+# install.packages("scales")
+library(scales)
+
+# Connect to db 
+fec <- dbConnect(SQLite(), "./data/fec.sqlite")
+
+# Select the required data from the sql table. Same where statements as above, however
+# now the data processing is already executed to some extent in SQL. First the sum of
+# total donation as well as the number of donators per candidate and cycle is calculated.
+# Next the seat_result is modified to include all the Incumbents who won, which have an
+# empty seat_result variable. Subsequently, the log10 of tot_amount as well as no_donors
+# is created, as the normal variable most probably is heavily positively skewed. Taking
+# the log gets rid or at least minimizes this skewness.
+sum.data.df <- as.data.frame.ffdf(read.dbi.ffdf(query =  "
+                                                select *, 
+                                                log10(tot_amount) as log_tot_amount, 
+                                                log10(no_donors) as log_no_donors,
+                                                case 
+                                                when seat_result_dum = 1 then 'Win'
+                                                else 'Lose'
+                                                end as seat_result
+                                                from(
+                                                select 
+                                                distinct cycle,  
+                                                recipient_name,  
+                                                case 
+                                                when seat_status='I' then 1
+                                                when seat_result='W' then 1
+                                                else 0
+                                                end as seat_result_dum, 
+                                                sum(amount) as tot_amount, 
+                                                count(transaction_id) as no_donors
+                                                from donations 
+                                                where seat = 'federal:house' 
+                                                and amount > 0 
+                                                and recipient_type='P' 
+                                                and (seat_status='I' or seat_result <>'')
+                                                group by cycle, recipient_name)", 
+                                                dbConnect.args = list(drv = dbConnect(SQLite(),                                                             "./data/fec.sqlite"), 
+                                                dbname = fec), next.rows = 500000))
+
+# Winsorize the two x variables for the regression at the 1% and 99% percentile
+# with the aim of reducing impact of the severest outlier. However, instead of 
+# the more common 5% and 95%, 1% and 99% have been chosen, to not modify too 
+# many observations and adhere to the given real data.
+sum.data.df$win_tot_amount <- Winsorize(sum.data.df$tot_amount, 
+                                            probs = c(0.01, 0.99))
+sum.data.df$win_no_donors <- Winsorize(sum.data.df$no_donors, 
+                                           probs = c(0.01, 0.99))
+
+# Create logit regression, which is of better use in a dummy-dependent regression
+# as compared to a normal linear regression
+logit.Mod <- glm(seat_result_dum ~ win_tot_amount + win_no_donors, 
+                data = sum.data.df, family = "binomial")
+# summary(logit.Mod)
+
+# Include the fitted probability values from the logit regression in the df
+sum.data.df$prob.win<- as.numeric(logit.Mod$fitted.values)
+
+# prob>0.5 indicates that this model would predict a win
+sum.data.df$predicted.results <- ifelse(sum.data.df$prob.win > 0.5,1,0) 
+
+# Check how many results would have been correctly predicted by this simple model
+# This more or less corresponds to the "in-sample fit"
+sum.data.df$match <- ifelse(sum.data.df$predicted.results == sum.data.df$seat_result_dum,1,0)
+prob.correct.prediction <- percent(sum(sum.data.df$match)/length(sum.data.df$match))
+prob.correct.prediction
+
+# Create df of logit regression results, which is later used in the graph
+reg.results <- as.data.frame(round(summary(logit.Mod)$coefficients, digits=6))
+rownames(reg.results) <- c("Intercept","Total Donation Amount in USD","Number of Donors")
+
+#Define theme for reg.results table in graph
+cust.thm <- ttheme_default(
+  core = list(fg_params=list(cex = 0.75)),
+  colhead = list(fg_params=list(cex = 0.75)),
+  rowhead = list(fg_params=list(cex = 0.75)))
+
+# Delete all files from workspace, except the ones still required
+rm(list= ls()[!(ls() %in% c('fec','table.3.1', 'table.3.2', 'table.3.3', 'donations.categ', 'cust.thm',
+                            'sum.data.df', 'reg.results'))])
+
+```
+
+
+
+```{r,fig.align='center', message = FALSE, warning = FALSE, fig.height = 7, fig.width = 7}
+# Create graph where we plot Number of Donors) against Total Donation Amount in USD
+# on a log10 x- resp. y-scale. If the respective candidate has won is illustrated
+# with the colors. Red is equal to a loss, whereas black means that the candidate has won.
+# Furthermore, add a stat_ellipse, which is a 90% normal confidence interval ellipse, for 
+# illustratory purposes. In the end, add the logit regression results from before to the 
+# graph. The results show that the both variables have a positive effect on the outcome
+# This in no way implies causation and should be seen as such.
+donorplot <- ggplot(sum.data.df, aes(y=tot_amount, x= no_donors, colour = seat_result))
+donorplot +  
+  labs( x = "Number of Donors", y = "Total Donation Amount in USD", 
+        colour = "Election Results", title = "US House of Representatives Election Results",
+        subtitle = "Relation between number of donors and amount of donations per candidate",
+        caption = "Source: US Federal Election Commission (FEC) data (1990-2014).") +
+  theme(plot.title = element_text(face="bold"), legend.position = c(0.83,0.9), 
+        legend.title = element_text(size=9, face="bold"), legend.key = element_rect(fill = "white"),
+        text=element_text(size=11,  family="Times"),
+        plot.caption = element_text(color = "gray27", face = "italic"),
+        panel.background = element_blank(), panel.grid.major = element_line(colour="grey", size=0.5),
+        panel.border = element_rect(colour = "gray27", fill=NA, size=0.5)) +
+  geom_point(alpha=0.1) +
+  scale_color_manual(values = c("red", "black")) +
+  stat_ellipse(level = 0.9)  +
+  scale_y_continuous(limits = c(0.1,max(sum.data.df$tot_amount)),
+                      trans ='log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x))) +
+  scale_x_continuous(limits = c(0.1,max(sum.data.df$tot_amount)),
+                     trans ='log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x))) +
+ annotation_custom(tableGrob(reg.results, theme=cust.thm), xmin=0, xmax=7, ymin=-1, ymax=0)
+```
