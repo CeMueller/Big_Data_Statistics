@@ -2,7 +2,7 @@
 ########DESC STATS##########
 ############################
 
-setwd("C:/Users/Cedric/Desktop/Uni/19_FS/Big Data Statistics/data/")
+setwd("C:/.../")
 
 # install.packages("ff")
 library(ff)
