@@ -1,6 +1,5 @@
-# Final html version of the RMarkdown report under: https://cemueller.github.io/Big_Data_Statistics/research_report.html
 # README: Big Data Statistics for R and Python: Group Examination of Part I
-
+# Final html version of the RMarkdown report under: https://cemueller.github.io/Big_Data_Statistics/research_report.html
 
 *Spring Term 2019*
 
